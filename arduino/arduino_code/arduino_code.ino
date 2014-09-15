@@ -1,3 +1,5 @@
+#include <Debouncer.h>
+
 const int NUM_POTS = 2;
 const int POT_PINS[NUM_POTS] = {0, 1};
 const int SIGNIFICANT = 3;
@@ -9,12 +11,18 @@ int old_pot_values[NUM_POTS];
 int button_state = 0;
 int old_button_state = 0;
 
+
+int TEST_BUTTON = 2;
+// Instantiate a Debouncer for digital pin 2 with a buffer interval of 25 ms
+Debouncer debouncer = Debouncer(25, TEST_BUTTON);
+
 void setup()
 {
   Serial.begin(9600);
 
-  pinMode(2, INPUT);
-  digitalWrite(2, HIGH);
+  pinMode(TEST_BUTTON, INPUT);
+  debouncer.write(HIGH);
+  //digitalWrite(TEST_BUTTON, HIGH);
   
   for(int i = 0; i < NUM_POTS; ++i)
   {
@@ -53,8 +61,10 @@ void loop()
     }
   }
   
+  
+  debouncer.update();
   old_button_state = button_state;
-  button_state = digitalRead(2);
+  button_state = debouncer.read();
   
   if(old_button_state > button_state)
   {
