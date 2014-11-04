@@ -1,28 +1,44 @@
-#include <Debouncer.h>
+/***********************************
+* Arduino code for 'Spilados'
+*  written by
+* Halldor Eldjarn (hae28@hi.is)
+*  &
+* Kristjan Eldjarn (keh4@hi.is)
+************************************/
 
-const int NUM_POTS = 2;
-const int POT_PINS[NUM_POTS] = {0, 1};
+#include <Wire.h>
+#include "SoftwareSerial.h"
+#include "Adafruit_Trellis.h"
+
+#define DEBUG false
+
+//
+// Constants
+//
+const int NUM_POTS = 8;
+const int POT_PINS[NUM_POTS] = {8, 9, 10, 11, 12, 13, 14, 15};
 const int SIGNIFICANT = 3;
 
-// Pot values are stored as [0; 1023]
+//
+// Store updated and old states of the pots
+//
 int pot_values[NUM_POTS];
 int old_pot_values[NUM_POTS];
 
-int button_state = 0;
-int old_button_state = 0;
-
-
-int TEST_BUTTON = 2;
-// Instantiate a Debouncer for digital pin 2 with a buffer interval of 25 ms
-Debouncer debouncer = Debouncer(25, TEST_BUTTON);
+//
+// Adafruit Trellis is the button array we are using
+//
+Adafruit_Trellis matrix = Adafruit_Trellis();
+Adafruit_TrellisSet trellis = Adafruit_TrellisSet(&matrix);
 
 void setup()
 {
   Serial.begin(9600);
-
-  pinMode(TEST_BUTTON, INPUT);
-  debouncer.write(HIGH);
-  //digitalWrite(TEST_BUTTON, HIGH);
+  
+  trellis.begin(0x70);
+  
+  pinMode(2, INPUT);
+  digitalWrite(2, HIGH);
   
   for(int i = 0; i < NUM_POTS; ++i)
   {
@@ -31,6 +47,7 @@ void setup()
   }
 }
 
+// Use: Returns true if the distance between values is significant
 boolean value_change_significant(int value, int new_value)
 {
   if (abs(value - new_value) >= SIGNIFICANT)
@@ -42,13 +59,47 @@ boolean value_change_significant(int value, int new_value)
 
 void send_value(int index, int value)
 {
+#if DEBUG
+  Serial.print(index);
+  Serial.print(", ");
+  Serial.println(value);
+#else
   Serial.write(index);
   Serial.write(value);
-  Serial.write(0);
+#endif 
 }
 
 void loop()
 {
+  delay(30);
+  
+  // Handle pushing buttons and toggling
+  // the LED on/off. 
+  // TODO: Sync with internal state dumps of the
+  // Sequencer over serial
+  if(trellis.readSwitches())
+  {
+    for(int i = 0; i < 16; i++)
+    {
+      if(trellis.justPressed(i))
+      {
+        if(trellis.isLED(i))
+        {
+          send_value(100 + i, 0);
+          trellis.clrLED(i);
+        }
+        else
+        {
+          send_value(100 + i, 255);
+          trellis.setLED(i);
+        }
+      }
+    }
+  }
+  
+  trellis.writeDisplay();
+  
+  // Read the pots, send values over serial
   for(int i = 0; i < NUM_POTS; ++i)
   {
     int new_value = analogRead(POT_PINS[i]);
@@ -60,20 +111,4 @@ void loop()
       send_value(i, new_value/4);
     }
   }
-  
-  
-  debouncer.update();
-  old_button_state = button_state;
-  button_state = debouncer.read();
-  
-  if(old_button_state > button_state)
-  {
-    send_value(2, 255);
-    //Serial.println("Button pushed down!");
-  }  
-  else if(old_button_state < button_state)
-  {
-    send_value(2, 0);
-    //Serial.println("Button has returned to his natural state of equilibrium!");
-  }    
 }
