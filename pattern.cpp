@@ -12,10 +12,25 @@ class Pattern {
     private:
         int write(string, string, int);
     public:
-        int writeKit(string, int);
-        int writePattern(string, int);
+        int writeKit(StringMatrix, int);
+        int writePattern(StringMatrix, int);
+        string packData(StringMatrix);
         StringMatrix readKit(int);
 };
+
+string Pattern::packData(StringMatrix data)
+{
+    string s = "";
+    for(int i = 0; i < data.size(); ++i)
+    {
+        for(int j = 0; j < data[i].size(); ++j)
+        {
+            s += data[i][j] + " ";
+        }
+        s += "\n";
+    }
+    return s;
+}
     
     
 // Writes pattern to "fileNamen.txt"
@@ -31,16 +46,18 @@ int Pattern::write(string fileName, string data, int n)
 
 // Writes parameters to "kitn.txt"
 // Overwrites the current content of "kitn.txt"
-int Pattern::writeKit(string params, int n)
+int Pattern::writeKit(StringMatrix params, int n)
 {
-    return write("kit", params, n);
+    string s = packData(params);
+    return write("kit", s, n);
 }
 
 // Writes pattern to "ptrnn.txt"
 // Overwrites the current content of "ptrnn.txt"
-int Pattern::writePattern(string pattern, int n)
+int Pattern::writePattern(StringMatrix pattern, int n)
 {
-    return write("ptrn", pattern, n);
+    string s = packData(pattern);
+    return write("ptrn", s, n);
 }
 
 // Reads the contents of "kitn.txt" and returns
@@ -69,18 +86,30 @@ StringMatrix Pattern::readKit(int n)
 int main()
 {
     Pattern p;
-    p.writeKit("1 2 3 4 5 6 7 8\n9 10 11 12 13 14 15 16", 2);
 
-    StringMatrix s = p.readKit(2);
-
-    for(int i = 0; i < s.size(); ++i)
+    StringMatrix sm1;
+    for(int i = 0; i < MAX_NO_INSTRUMENTS; ++i)
     {
-        for(int j = 0; j < s[i].size(); ++j)
+        sm1.push_back(vector<string>());
+        for(int j = 0; j < MAX_NO_PARAMETERS; ++j)
         {
-            cout << s[i][j] << " ";
+            sm1[i].push_back(to_string(i * j));
         }
-        cout << "\n";
     }
+
+    p.writeKit(sm1, 2);
+
+    StringMatrix sm2 = p.readKit(2);
+
+    for(int i = 0; i < sm2.size(); ++i)
+    {
+        for(int j = 0; j < sm2[i].size(); ++j)
+        {
+            sm2[i][j] = to_string(stoi(sm2[i][j]) + 1);
+        }
+    }
+
+    int i = p.writeKit(sm2, 3);
 
     return 0;
 }
