@@ -1,28 +1,42 @@
-//
-//  main.cpp
-//  TonicStandaloneDemo
-//
-//  Created by Nick Donaldson on 5/16/13.
-//
-//
+/********************************
+ * Tónvélarkóði
+ * ===============================
+ * Höfundar:
+ * Halldór Eldjárn (hae28@hi.is)
+ *  &
+ * Kristján Eldjárn (keh4@hi.is)
+ ********************************/
 
-// This is a super-simple demo showing a very basic command-line C++ program to play a Tonic synth
+#include <unistd.h>
 
 #include <iostream>
-#include "Tonic.h"
-#include "RtAudio.h"
+#include <functional>
 #include <vector>
 
-//#include <wiringPi.h>
-//#include <wiringSerial.h>
+#include "Tonic.h"
+#include "RtAudio.h"
+
+#include "BassDrum.h"
+#include "Snare.h"
+#include "HiHat.h"
+#include "Funky.h"
+
+#include "PatternLoader.h"
+
+#define RASPI false
+
+#if RASPI
+#include <wiringPi.h>
+#include <wiringSerial.h>
+#endif
 
 using namespace Tonic;
 
 const unsigned int nChannels = 2;
+const float MAX_VALUE = 241.0;
 
-// Static smart pointer for our Synth
-
-static Synth synth;
+const int NUM_TRACKS = 4;
+const int GLOBAL_MAX_STEPS = 16;
 
 class SequencerTrack
 {
@@ -56,88 +70,252 @@ public:
             this->track[noteIndex] = state;
         }
     }
+
+    bool noteAtIndex(int noteIndex)
+    {
+        return track[noteIndex];
+    }
     
     void printTrack()
     {
-        std:cout << "SequencerTrack >> (" << to_string(this->currentStep) << "/" << to_string(this->maxSteps) << "): ";
+        std::cout << "SequencerTrack >> (" << std::to_string(this->currentStep) << "/" << std::to_string(this->maxSteps) << "): ";
         
         for (int i = 0; i < this->maxSteps; i++)
         {
-            std::cout << to_string(track[i]) << " ";
+            std::cout << std::to_string(track[i]) << " ";
         }
         std::cout << std::endl;
     }
 };
 
-class BassDrum : public Synth
+class DrumMachine
 {
-    ControlParameter pitchParameter = addParameter("pitch", 0.5);
-    const TonicFloat MIN_PITCH = 20;
-    const TonicFloat PITCH_RANGE = 400;
-    
-    ControlParameter decayParameter = addParameter("decay", 0.5);
-    const TonicFloat MIN_DECAY = 0.01;
-    const TonicFloat DECAY_RANGE = 0.65;
-    
-    ControlParameter rampParameter = addParameter("ramp", 0.5);
-    const TonicFloat MIN_RAMP_PITCH = 20;
-    const TonicFloat RAMP_PITCH_RANGE = 1000;
-    
-    ControlParameter rampDecayParameter = addParameter("rampDecay", 0.5);
-    const TonicFloat MIN_RAMP_DECAY = 0.001;
-    const TonicFloat RAMP_DECAY_RANGE = 0.35;
-    
-    ControlParameter noiseLevelParameter = addParameter("noiseLevel", 0.5);
-    const TonicFloat MIN_NOISE_LEVEL = 0;
-    const TonicFloat NOISE_LEVEL_RANGE = 1.0;
-    
-    ControlParameter noiseDecayParameter = addParameter("noiseDecay", 0.5);
-    const TonicFloat MIN_NOISE_DECAY = 0.01;
-    const TonicFloat NOISE_DECAY_RANGE = 0.9;
-    
-    ControlParameter triggerParameter = addParameter("trigger", 0);
-    
+    Synth synth;
+    std::vector<SequencerTrack> tracks;
+    std::vector<Synth> trackSynths;
+    int activeTrackIndex;
 public:
-    BassDrum()
+    bool shouldRefreshUserInterface;
+    int outgoingInfo[32];
+
+    DrumMachine(std::vector<Synth> trackSynths)
     {
-        ControlMetro metro = ControlMetro().bpm(120);
-        
-        ADSR ampEnv = ADSR(0.001, 0.8, 0.0, 0.0)
-        .attack(0.001)
-        .decay(MIN_DECAY + decayParameter * DECAY_RANGE)
-        .sustain(0)
-        .release(0)
-        .doesSustain(true)
-        .trigger(triggerParameter);
-        
-        ADSR pitchEnv = ADSR(0.001, 0.3, 0.0, 0.0)
-        .attack(0.001)
-        .decay(MIN_RAMP_DECAY + rampDecayParameter * RAMP_DECAY_RANGE)
-        .doesSustain(false)
-        .trigger(triggerParameter)
-        .exponential(1);
-        
-        ADSR noiseEnv = ADSR(0.001, 0.3, 0.0, 0.0)
-        .attack(0.001)
-        .decay(MIN_NOISE_DECAY + noiseDecayParameter * NOISE_DECAY_RANGE)
-        .doesSustain(false)
-        .trigger(triggerParameter);
-        
-        Generator sineOsc = SineWave()
-        .freq((MIN_PITCH + pitchParameter * PITCH_RANGE) + (MIN_RAMP_PITCH + pitchEnv * RAMP_PITCH_RANGE));
-        
-        Generator noiseOsc = PinkNoise() * noiseEnv * (MIN_NOISE_LEVEL + noiseLevelParameter * NOISE_DECAY_RANGE);
-    
-        setOutputGen((sineOsc + noiseOsc) * ampEnv);
+	for(int i = 0; i < 32; i++)
+        {
+            this->outgoingInfo[i] = 0;
+        }
+	
+        this->shouldRefreshUserInterface = false; 
+        this->activeTrackIndex = 0;
+        this->synth = synth;
+        this->trackSynths = trackSynths;
+        for(int i = 0; i < NUM_TRACKS; i++)
+        {
+            this->tracks.push_back(*new SequencerTrack(GLOBAL_MAX_STEPS));
+        }
     }
+    
+    void tick()
+    {
+        for(int i = 0; i < NUM_TRACKS; i++)
+        {
+            if(this->tracks[i].tick())
+            {
+                this->trackSynths[i].setParameter("trigger", 1);
+            }
+        }
+    }
+    
+    void setActiveChannel(int param)
+    {
+        int newActiveTrack = (int)(((float)param / (MAX_VALUE + 1)) * NUM_TRACKS);
+        
+        if(newActiveTrack != this->activeTrackIndex)
+        {
+            this->activeTrackIndex = newActiveTrack;
+            this->shouldRefreshUserInterface = true;
+            
+            for(int i = 0; i < 16; i++)
+            {
+                this->outgoingInfo[2*i] = 100 + i;
+                this->outgoingInfo[2*i+1] = this->tracks[activeTrackIndex].noteAtIndex(i) ? 255 : 0;
+            }
+            printf("Active track is: %i\n", this->activeTrackIndex);
+            std::cout << "Outgoing info to arduino is: " << this->outgoingInfo << std::endl;
+        }
+    }
+    
+    void setNoteForTrack(int trackIndex, int noteIndex, bool state)
+    {
+        if(trackIndex >= tracks.size() || trackIndex < 0)
+        {
+            std::cout << "Trying to set state of track out of bounds. Ignoring." << std::endl;
+        }
+        else
+        {
+            std::cout << "Setting note " << noteIndex << " to " << state << " on track " << trackIndex << std::endl;
+            tracks[trackIndex].setNote(noteIndex, state);
+        }
+    }
+    
+    void loadKit(int kitIndex)
+    {
+        PatternLoader p;
+        StringMatrix kitData = p.readKit(kitIndex);
+        for(int i = 0; i < kitData.size(); i++)
+        {
+            for(int j = 0; j < kitData[i].size(); j++)
+            {
+                this->trackSynths[i].setParameter("param" + to_string(j), stof(kitData[i][j])/238.0);
+            }
+        }
+    }
+    
+    void loadPattern(int pattIndex)
+    {
+        PatternLoader p;
+        StringMatrix pattData = p.readPattern(pattIndex);
+        for(int i = 0; i < pattData.size(); i++)
+        {
+            for(int j = 0; j < pattData[i].size(); j++)
+            {
+                this->tracks[i].setNote(j, stoi(pattData[i][j]));
+            }
+        }
+    }
+    
+    
+    // Inject received parameters to the Tonic synth
+    void changeValueForParameter(int param, int value)
+    {
+        TonicFloat normalizedValue = (float)value / MAX_VALUE;
+        SequencerTrack activeTrack = this->tracks[this->activeTrackIndex];
+        Synth activeSynth = this->trackSynths[this->activeTrackIndex];
+        
+        switch(param)
+        {
+                // Parameters 0-7 are the pots.
+                // TODO: Connect ALL the pots!
+            case 0:
+            {
+                activeSynth.setParameter("param0", normalizedValue);
+                break;
+            }
+            case 1:
+            {
+                activeSynth.setParameter("param1", normalizedValue);
+                break;
+            }
+                
+            case 2:
+            {
+                activeSynth.setParameter("param2", normalizedValue);
+                break;
+            }
+                
+            case 3:
+            {
+                activeSynth.setParameter("param3", normalizedValue);
+                break;
+            }
+                
+            case 4:
+            {
+                activeSynth.setParameter("param4", normalizedValue);
+                break;
+            }
+               /*
+            case 5:
+            {
+                activeSynth.setParameter("param5", normalizedValue);
+                break;
+            }
+                
+            case 6:
+            {
+                activeSynth.setParameter("param6", normalizedValue);
+                break;
+            }*/
+                
+            case 5:
+            {
+                this->setActiveChannel(value); 
+		break;
+            }
+                
+                // Those are messages when toggling the Trellis button array
+            case 100: case 101: case 102: case 103:
+            case 104: case 105: case 106: case 107:
+            case 108: case 109: case 110: case 111:
+            case 112: case 113: case 114: case 115:
+            {
+                bool state;
+                state = (value > 128) ? true : false;
+                this->setNoteForTrack(activeTrackIndex, param - 100, state);
+                activeTrack.printTrack();
+                break;
+            }
+        }
+    }
+
+    
 };
 
-TONIC_REGISTER_SYNTH(BassDrum);
-
-int renderCallback( void *outputBuffer, void *inputBuffer, unsigned int nBufferFrames,
-        double streamTime, RtAudioStreamStatus status, void *userData )
+// Very simple serial communication
+void listenForMessages( DrumMachine *drumMachine )
 {
-    synth.fillBufferOfFloats((float*)outputBuffer, nBufferFrames, nChannels);
+#if RASPI
+    wiringPiSetup();
+    
+    int serialConnection = serialOpen("/dev/ttyACM0", 9600);
+#endif
+
+    while(1)
+    {
+#if RASPI
+        if(drumMachine->shouldRefreshUserInterface)
+        {
+            for(int i = 0; i < 16*2; i++)
+            {
+                if(drumMachine->outgoingInfo[i] >= 0 && drumMachine->outgoingInfo[i] <= 255)
+                {
+                    serialPutchar(serialConnection, drumMachine->outgoingInfo[i]);
+                    std::cout << "out byte: " << drumMachine->outgoingInfo[i] << std::endl;
+                }
+                else
+                {
+                    std::cout << "Error, trying to send shitty byte from outgoingInfo." << std::endl;
+                }
+            }
+            drumMachine->shouldRefreshUserInterface = false;
+        }
+
+        int param = serialGetchar(serialConnection);
+        if(param == -1) continue;
+        int value = serialGetchar(serialConnection);
+        if(value == -1) continue;
+#endif
+        
+#if RASPI
+        drumMachine->changeValueForParameter(param, value);
+#else
+        // Use this to fake some parameter changes when running on other systems than
+        // the Raspi, and we don't have any controls.
+        //drumMachine->changeValueForParameter(100 + rand() % 7, rand() * 238);
+        sleep(1);
+        std::cout << "Value changed" << std::endl;
+#endif
+        
+    }
+}
+// Global Tonic Synth instance
+static Synth mixer;
+
+// The callback function we pass to the Audio
+int renderCallback( void *outputBuffer, void *inputBuffer, unsigned int nBufferFrames,
+                   double streamTime, RtAudioStreamStatus status, void *userData )
+{
+    mixer.fillBufferOfFloats((float*)outputBuffer, nBufferFrames, nChannels);
     return 0;
 }
 
@@ -147,52 +325,57 @@ int main(int argc, const char * argv[])
     RtAudio::StreamParameters rtParams;
     rtParams.deviceId = dac.getDefaultOutputDevice();
     rtParams.nChannels = nChannels;
+#if RASPI
+    unsigned int sampleRate = 22000;
+#else
     unsigned int sampleRate = 44100;
-    unsigned int bufferFrames = 512;
+#endif
+    unsigned int bufferFrames = 512; // 512 sample frames
+    
     Tonic::setSampleRate(sampleRate);
-
+    
+    std::vector<Synth> synths;
+    synths.push_back(*new BassDrum());
+    synths.push_back(*new Snare());
+    synths.push_back(*new HiHat());
+    synths.push_back(*new Funky());
+    
+    // Test write pattern
+    
+    DrumMachine *drumMachine = new DrumMachine(synths);
+    
+    drumMachine->loadPattern(0);
+    
     ControlMetro metro = ControlMetro().bpm(480);
     
-    SequencerTrack *track = new SequencerTrack(16);
-    track->setNote(2, true);
-    track->printTrack();
-    
-    BassDrum *bassDrum = new BassDrum();
-    
-    ControlCallback callback = ControlCallback(bassDrum, [=](ControlGeneratorOutput output){
-        if(track->tick())
-        {
-            bassDrum->setParameter("trigger", 1);
-        }
+    ControlCallback drumMachineTick = ControlCallback(&mixer, [&](ControlGeneratorOutput output){
+        drumMachine->tick();
     }).input(metro);
     
-    synth.setOutputGen(*bassDrum * 0.1);
-
-    
-    for(int i = 0; i < 32; i++)
+    Generator mixedSignal;
+    for(int i = 0; i < NUM_TRACKS; i++)
     {
-        std::cout << track->tick() << ", ";
+        mixedSignal = mixedSignal + synths[i];
     }
-    std::cout << std::endl;
+    mixer.setOutputGen(mixedSignal);
     
-    // open rtaudio stream
-    try {
+    try
+    {
         dac.openStream( &rtParams, NULL, RTAUDIO_FLOAT32, sampleRate, &bufferFrames, &renderCallback, NULL, NULL );
-        
         dac.startStream();
         
-        // hacky, yes, but let's just hang out for awhile until someone presses a key
-        printf("\n\nPress Enter to stop\n\n");
+        // Send a pointer to our global drumMachine instance
+        // to the serial communications layer.
+        listenForMessages( drumMachine );
         
-        cin.get();
-	    
         dac.stopStream();
     }
-    catch ( RtError& e ) {
+    catch ( RtError& e )
+    {
         std::cout << '\n' << e.getMessage() << '\n' << std::endl;
         exit( 0 );
     }
- 
+    
     return 0;
 }
 
